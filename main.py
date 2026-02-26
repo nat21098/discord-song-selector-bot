@@ -3,43 +3,33 @@ import random
 import re
 import json
 import os
-import asyncio
 import requests
 from discord.ext import commands, tasks
 from dotenv import load_dotenv
 from flask import Flask
 from threading import Thread
 
-# .envファイル読み込み（ローカル開発用）
 load_dotenv()
 
 # ==========================================
-# 【重要】ここをあなたのRaw URLに書き換えてください
+# 【変更点】URLを環境変数から読み込むようにしました
 # ==========================================
-JSON_URL = "https://raw.githubusercontent.com/nat21098/discord-song-selector-bot/refs/heads/main/songs.json"
+JSON_URL = os.getenv('JSON_URL')
 
-# --- 1. Webサーバー設定 (Renderのスリープ防止用) ---
+# --- 1. Webサーバー設定 ---
 app = Flask('')
-
 @app.route('/')
-def home():
-    return "Bot is running!"
-
-def run():
-    app.run(host='0.0.0.0', port=8080)
-
+def home(): return "Bot is running!"
+def run(): app.run(host='0.0.0.0', port=8080)
 def keep_alive():
     t = Thread(target=run)
     t.start()
 
 # --- 2. Discord Bot設定 ---
 intents = discord.Intents.default()
-intents.message_content = True  # メッセージ内容の読み取り許可
-intents.members = True          # メンバー情報の取得許可
+intents.message_content = True
+bot = commands.Bot(command_prefix='/', intents=intents, help_command=None)
 
-bot = commands.Bot(command_prefix='/', intents=intents)
-
-# 難易度の色設定
 DIFFICULTY_COLORS = {
     "EASY": 0x66dd11, "NORMAL": 0x33bbee, "HARD": 0xffaa00,
     "EXPERT": 0xee4466, "MASTER": 0xbb33ee, "APPEND": 0xff7dc9,
@@ -48,54 +38,69 @@ DIFF_MAP = {"e": "EASY", "n": "NORMAL", "h": "HARD", "x": "EXPERT", "m": "MASTER
 
 songs_database = []
 
-# GitHubからJSONを読み込む関数
 def load_songs_from_github():
+    # URLが設定されていない場合のチェック
+    if not JSON_URL:
+        print("エラー: JSON_URL が環境変数に設定されていません。")
+        return []
+    
     try:
         response = requests.get(JSON_URL)
         if response.status_code == 200:
             raw_data = response.json()
-            # JSONを抽選用のリスト形式に変換
             return [{"title": t, "difficulty": k.upper(), "level": v} 
                     for t, info in raw_data.items() if isinstance(info, dict)
                     for k, v in info.items() if k.upper() in DIFFICULTY_COLORS and isinstance(v, int)]
     except Exception as e:
-        print(f"JSON読み込みエラー: {e}")
+        print(f"読み込みエラー: {e}")
     return []
 
-# ★【更新】1分ごとに自動更新するタスク
 @tasks.loop(minutes=1)
 async def update_songs_task():
     global songs_database
     new_data = load_songs_from_github()
-    if new_data:
-        songs_database = new_data
-        print("楽曲データを最新に更新しました（1分間隔）")
+    if new_data: songs_database = new_data
 
-# 送信用埋め込みメッセージ作成
 def create_song_embed(song):
     color = DIFFICULTY_COLORS.get(song["difficulty"], 0x95a5a6)
     content = f"**{song['title']}**\n{song['difficulty']} Lv. {song['level']}"
     return discord.Embed(description=content, color=color)
 
-# --- 3. メッセージ受信イベント ---
+# --- 3. イベントとコマンド ---
+
+@bot.event
+async def on_ready():
+    if not update_songs_task.is_running():
+        update_songs_task.start()
+    print(f'Logged in as {bot.user.name}')
+
 @bot.event
 async def on_message(message):
     if message.author.bot or not message.content.startswith('/'):
         return
 
     content = message.content.lower().strip()
-    
-    # 全抽選
+
+    if content == "/help":
+        embed = discord.Embed(title="🎮 スラッシュコマンド一覧", color=0x2ecc71)
+        embed.add_field(name="基本", value="`/all` : 全曲から完全ランダム", inline=False)
+        embed.add_field(name="難易度指定", value="`/m` : MASTERのみ\n`/x` : EXPERTのみ\n`/h` : HARDのみ", inline=True)
+        embed.add_field(name="レベル指定", value="`/26` : Lv26のみ\n`/26-28` : Lv26〜28", inline=True)
+        embed.add_field(name="組み合わせ例", value="`/m26` : MASTERのLv26\n`/x27-28` : EXPERTのLv27〜28", inline=False)
+        embed.set_footer(text="※すべて半角・スペースなしで入力してください")
+        await message.channel.send(embed=embed)
+        return
+
     if content == "/all":
         if songs_database:
             await message.channel.send(embed=create_song_embed(random.choice(songs_database)))
         else:
-            await message.channel.send("楽曲データが空か、読み込み中です。1分ほどお待ちください。")
+            await message.channel.send("⚠️ データ読み込み中です。1分ほどお待ちください。")
         return
-        
-    # 条件抽選 (例: /m26, /30, /h20-25)
+
     match = re.match(r"^/([a-z]+)?(\d+)?(?:-(\d+)?)?$", content)
     if match:
+        if not songs_database: return
         d_raw, l1, l2 = match.groups()
         diff = DIFF_MAP.get(d_raw)
         min_l, max_l = 0, 100
@@ -105,26 +110,16 @@ async def on_message(message):
             elif l1: min_l = max_l = int(l1)
             elif l2: max_l = int(l2)
             elif not diff: return
-        except ValueError:
-            return
+        except: return
         
         res = [s for s in songs_database if min_l <= s["level"] <= max_l]
-        if diff:
-            res = [s for s in res if s["difficulty"] == diff]
+        if diff: res = [s for s in res if s["difficulty"] == diff]
         
         if res:
             await message.channel.send(embed=create_song_embed(random.choice(res)))
         else:
-            await message.channel.send("条件に合う曲が見つかりませんでした。")
+            await message.channel.send("❌ 条件に合う曲がありません。")
 
-# 起動時の処理
-@bot.event
-async def on_ready():
-    print(f'ログイン成功: {bot.user.name}')
-    if not update_songs_task.is_running():
-        update_songs_task.start()
-
-# 実行
 if __name__ == "__main__":
     songs_database = load_songs_from_github()
     keep_alive()
