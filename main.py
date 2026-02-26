@@ -14,7 +14,7 @@ load_dotenv()
 
 # --- 1. 設定項目（ここを自分のものに書き換える） ---
 # GitHubでsongs.jsonを開き、「Raw」ボタンを押した先のURLを貼ってください
-JSON_URL = "ここにGitHubのRaw URLを貼り付けてください"
+JSON_URL = "https://raw.githubusercontent.com/nat21098/discord-song-selector-bot/refs/heads/main/songs.json?token=GHSAT0AAAAAADWMJMUYSHPBCEHUKZHB5U622M7VWIA"
 
 # --- 2. Webサーバー設定 (Renderのスリープ防止用) ---
 app = Flask('')
