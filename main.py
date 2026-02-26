@@ -10,7 +10,7 @@ from dotenv import load_dotenv
 from flask import Flask
 from threading import Thread
 
-# .envファイル読み込み（ローカル用）
+# .envファイル読み込み（ローカル開発用）
 load_dotenv()
 
 # ==========================================
@@ -32,10 +32,10 @@ def keep_alive():
     t = Thread(target=run)
     t.start()
 
-# --- 2. Discord Bot設定 (Intents設定済み) ---
+# --- 2. Discord Bot設定 ---
 intents = discord.Intents.default()
-intents.message_content = True  # メッセージ内容を読み取る許可
-intents.members = True          # サーバーメンバー情報の取得許可
+intents.message_content = True  # メッセージ内容の読み取り許可
+intents.members = True          # メンバー情報の取得許可
 
 bot = commands.Bot(command_prefix='/', intents=intents)
 
@@ -54,7 +54,7 @@ def load_songs_from_github():
         response = requests.get(JSON_URL)
         if response.status_code == 200:
             raw_data = response.json()
-            # JSON形式をプログラム用に変換
+            # JSONを抽選用のリスト形式に変換
             return [{"title": t, "difficulty": k.upper(), "level": v} 
                     for t, info in raw_data.items() if isinstance(info, dict)
                     for k, v in info.items() if k.upper() in DIFFICULTY_COLORS and isinstance(v, int)]
@@ -62,14 +62,14 @@ def load_songs_from_github():
         print(f"JSON読み込みエラー: {e}")
     return []
 
-# 10分ごとに自動更新するタスク
-@tasks.loop(minutes=10)
+# ★【更新】1分ごとに自動更新するタスク
+@tasks.loop(minutes=1)
 async def update_songs_task():
     global songs_database
     new_data = load_songs_from_github()
     if new_data:
         songs_database = new_data
-        print("楽曲データをGitHubから最新に更新しました。")
+        print("楽曲データを最新に更新しました（1分間隔）")
 
 # 送信用埋め込みメッセージ作成
 def create_song_embed(song):
@@ -80,19 +80,17 @@ def create_song_embed(song):
 # --- 3. メッセージ受信イベント ---
 @bot.event
 async def on_message(message):
-    # Bot自身の発言は無視、かつ / で始まらない場合は無視
     if message.author.bot or not message.content.startswith('/'):
         return
 
     content = message.content.lower().strip()
-    print(f"受信したコマンド: {content}") # ログ確認用
     
     # 全抽選
     if content == "/all":
         if songs_database:
             await message.channel.send(embed=create_song_embed(random.choice(songs_database)))
         else:
-            await message.channel.send("楽曲データが空か、読み込み中です。")
+            await message.channel.send("楽曲データが空か、読み込み中です。1分ほどお待ちください。")
         return
         
     # 条件抽選 (例: /m26, /30, /h20-25)
@@ -122,18 +120,14 @@ async def on_message(message):
 # 起動時の処理
 @bot.event
 async def on_ready():
-    print(f'ログインしました: {bot.user.name}')
-    # 自動更新タスクが動いていなければ開始
+    print(f'ログイン成功: {bot.user.name}')
     if not update_songs_task.is_running():
         update_songs_task.start()
 
 # 実行
 if __name__ == "__main__":
-    # 初回のデータ読み込み
     songs_database = load_songs_from_github()
-    # Webサーバー起動（Render用）
     keep_alive()
-    # Bot起動（環境変数からトークン取得）
     token = os.getenv('DISCORD_BOT_TOKEN')
     if token:
         bot.run(token)
